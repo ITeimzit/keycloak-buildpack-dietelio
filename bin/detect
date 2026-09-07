@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Ce buildpack ne s'applique qu'à l'application IAM : le dossier déployé
+# (PROJECT_DIR=iam) porte le realm à importer.
+if [ -f "$1/realm-dietelio.json" ]; then
+  echo "Keycloak (Dietelio)"
+  exit 0
+fi
+exit 1

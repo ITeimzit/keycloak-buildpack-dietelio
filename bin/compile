@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Construction de l'image Keycloak pour Scalingo (docs/76 §5, Phase 1).
+#
+# Tout est ÉPINGLÉ et VÉRIFIÉ : la version de Keycloak et celle du JDK ne
+# changent qu'en changeant ce fichier (revue, puis redéploiement), et chaque
+# archive téléchargée est contrôlée par son empreinte SHA-256 avant d'être
+# ouverte. Un serveur d'identité ne se construit pas sur « latest ».
+#
+# Le buildpack fait au BUILD tout ce qui est long — téléchargements,
+# compilation du fournisseur bcrypt, `kc.sh build` — pour que le démarrage
+# tienne dans la fenêtre de readiness de Scalingo (`start --optimized`).
+#
+#   bin/compile <build-dir> <cache-dir> [<env-dir>]
+set -euo pipefail
+
+BUILD_DIR="$1"
+CACHE_DIR="$2"
+
+KEYCLOAK_VERSION="26.7.3"
+# Empreinte calculée le 04/09/2026 sur l'archive publiée
+# https://github.com/keycloak/keycloak/releases/download/26.7.3/keycloak-26.7.3.tar.gz
+KEYCLOAK_SHA256="77657f30b7e90d70f727712ce1c967f430fd6a5e9f458d32d8c6df0635345f47"
+KEYCLOAK_URL="https://github.com/keycloak/keycloak/releases/download/${KEYCLOAK_VERSION}/keycloak-${KEYCLOAK_VERSION}.tar.gz"
+
+# Temurin 21 (LTS) — empreinte publiée par Adoptium à côté de l'archive
+# (OpenJDK21U-jdk_x64_linux_hotspot_21.0.8_9.tar.gz.sha256.txt).
+JDK_VERSION="21.0.8+9"
+JDK_SHA256="f2dc5418092c43003db8f9005c4a286e1c0104fea96ccdd49e8ebd037cac9219"
+JDK_URL="https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.8_9.tar.gz"
+
+say() { echo "-----> $*"; }
+
+# Télécharge dans le cache si l'empreinte attendue n'y est pas déjà, puis la vérifie.
+fetch() {
+  local url="$1" out="$2" sha="$3"
+  if [ -f "$out" ] && echo "$sha  $out" | sha256sum -c --status; then
+    say "cache : $(basename "$out")"
+    return
+  fi
+  say "téléchargement : $url"
+  curl -sSfL --retry 3 --retry-delay 5 -o "$out" "$url"
+  if ! echo "$sha  $out" | sha256sum -c --status; then
+    echo " !     empreinte SHA-256 inattendue pour $(basename "$out") — archive refusée" >&2
+    rm -f "$out"
+    exit 1
+  fi
+}
+
+mkdir -p "$CACHE_DIR"
+fetch "$JDK_URL" "$CACHE_DIR/jdk-${JDK_VERSION}.tar.gz" "$JDK_SHA256"
+fetch "$KEYCLOAK_URL" "$CACHE_DIR/keycloak-${KEYCLOAK_VERSION}.tar.gz" "$KEYCLOAK_SHA256"
+
+say "JDK Temurin ${JDK_VERSION}"
+rm -rf "$BUILD_DIR/jdk" && mkdir -p "$BUILD_DIR/jdk"
+tar -xzf "$CACHE_DIR/jdk-${JDK_VERSION}.tar.gz" -C "$BUILD_DIR/jdk" --strip-components=1
+export JAVA_HOME="$BUILD_DIR/jdk"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+say "Keycloak ${KEYCLOAK_VERSION}"
+rm -rf "$BUILD_DIR/keycloak" && mkdir -p "$BUILD_DIR/keycloak"
+tar -xzf "$CACHE_DIR/keycloak-${KEYCLOAK_VERSION}.tar.gz" -C "$BUILD_DIR/keycloak" --strip-components=1
+
+say "fournisseur bcrypt (vérification des mots de passe importés de GoTrue)"
+KEYCLOAK_HOME="$BUILD_DIR/keycloak" bash "$BUILD_DIR/providers/bcrypt/build.sh"
+cp "$BUILD_DIR/providers/bcrypt/dist/dietelio-keycloak-bcrypt.jar" "$BUILD_DIR/keycloak/providers/"
+
+say "realm à importer au premier démarrage"
+mkdir -p "$BUILD_DIR/keycloak/data/import"
+cp "$BUILD_DIR/realm-dietelio.json" "$BUILD_DIR/keycloak/data/import/"
+
+# Les options de BUILD de Keycloak (celles que `start --optimized` ne peut
+# plus changer) : base PostgreSQL, sonde de santé sur le port routé — Scalingo
+# n'en route qu'un. Le cache (KC_CACHE=local, ou ispn + KC_CACHE_STACK=jdbc-ping
+# dès qu'un réseau privé relie les conteneurs) est une option d'EXÉCUTION en
+# 26.7 : il se règle par variable d'environnement, sans redéploiement.
+# Fonctionnalités retirées au build (docs/110 §2) : rien que Dietelio n'utilise
+# — ni services d'autorisation UMA, ni CIBA, ni device flow, ni Kerberos, ni
+# Docker, ni organisations, ni courtage d'identités (Twitter, API de
+# brokering), ni échange de jetons, ni SAML, ni workflows, ni comptes de
+# service Kubernetes, ni OpenTelemetry. L'impersonation est retirée à dessein :
+# docs/98 §7 bis l'interdit au compte de service, ici elle n'existe plus du
+# tout. Chaque retrait allège les classes chargées (métaspace) et la surface
+# exposée ; ce qui pourrait servir demain reste : WebAuthn et passkeys, codes
+# de secours, mise à jour d'adresse, politiques de client, PAR, DPoP,
+# sessions persistées, console et API d'administration, console de compte.
+say "kc.sh build (db=postgres, sonde de santé sur le port HTTP, fonctionnalités inutilisées retirées)"
+"$BUILD_DIR/keycloak/bin/kc.sh" build \
+  --db=postgres \
+  --health-enabled=true \
+  --http-management-health-enabled=false \
+  --features-disabled=authorization,admin-fine-grained-authz,ciba,device-flow,docker,kerberos,impersonation,organization,twitter-broker,identity-brokering-api,token-exchange-standard,jwt-authorization-grant,client-auth-federated,step-up-authentication-saml,workflows,kubernetes-service-accounts,opentelemetry,user-event-metrics
+
+# Au démarrage : Java, Keycloak et la base sur le chemin. Scalingo expose la
+# base en URL « postgres:// » ; Keycloak veut une URL JDBC, un utilisateur
+# et un mot de passe — et TLS est imposé.
+mkdir -p "$BUILD_DIR/.profile.d"
+cat > "$BUILD_DIR/.profile.d/keycloak.sh" <<'PROFILE'
+export JAVA_HOME="$HOME/jdk"
+export PATH="$JAVA_HOME/bin:$HOME/keycloak/bin:$PATH"
+export KC_HTTP_PORT="${PORT:-8080}"
+# Une JVM dans un conteneur : les arènes glibc sont bornées (docs/110 — sans
+# cette borne, la mémoire native gonfle d'un thread à l'autre). Valeur par
+# défaut, que l'environnement de l'application peut remplacer.
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+if [ -n "${SCALINGO_POSTGRESQL_URL:-}" ] && [ -z "${KC_DB_URL:-}" ]; then
+  _url="${SCALINGO_POSTGRESQL_URL#*://}"
+  _creds="${_url%%@*}"
+  _rest="${_url#*@}"
+  _hostdb="${_rest%%\?*}"
+  urldecode() { printf '%b' "${1//%/\\x}"; }
+  export KC_DB_USERNAME="$(urldecode "${_creds%%:*}")"
+  export KC_DB_PASSWORD="$(urldecode "${_creds#*:}")"
+  export KC_DB_URL="jdbc:postgresql://${_hostdb}?sslmode=require"
+  unset _url _creds _rest _hostdb
+fi
+PROFILE
+
+say "terminé : $(du -sh "$BUILD_DIR/keycloak" | cut -f1) de Keycloak, $(du -sh "$BUILD_DIR/jdk" | cut -f1) de JDK"

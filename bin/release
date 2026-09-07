@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Le processus par défaut ; le Procfile du dossier iam/ le redit explicitement.
+cat <<'YAML'
+---
+default_process_types:
+  web: keycloak/bin/kc.sh start --optimized --import-realm
+YAML
