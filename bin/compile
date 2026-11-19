@@ -23,10 +23,14 @@ KEYCLOAK_SHA256="77657f30b7e90d70f727712ce1c967f430fd6a5e9f458d32d8c6df0635345f4
 KEYCLOAK_URL="https://github.com/keycloak/keycloak/releases/download/${KEYCLOAK_VERSION}/keycloak-${KEYCLOAK_VERSION}.tar.gz"
 
 # Temurin 21 (LTS) — empreinte publiée par Adoptium à côté de l'archive
-# (OpenJDK21U-jdk_x64_linux_hotspot_21.0.8_9.tar.gz.sha256.txt).
-JDK_VERSION="21.0.8+9"
-JDK_SHA256="f2dc5418092c43003db8f9005c4a286e1c0104fea96ccdd49e8ebd037cac9219"
-JDK_URL="https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.8_9.tar.gz"
+# (OpenJDK21U-jdk_x64_linux_hotspot_21.0.13.1_2.tar.gz.sha256.txt).
+# 21.0.13.1+2 (publiée le 18/11/2026) remplace 21.0.8+9 : la version corrigée
+# que le bulletin de sécurité Java de Scalingo du 18/11/2026 demande
+# (docs/361). Empreinte relevée le 19/11/2026, identique par l'API
+# d'Adoptium, le fichier .sha256.txt et le calcul sur l'archive.
+JDK_VERSION="21.0.13.1+2"
+JDK_SHA256="bb8a93f9ae6e7a693b2b721e85dbeff26ae1a77447985a8d7afcdd9c7cf6222e"
+JDK_URL="https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13.1%2B2/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13.1_2.tar.gz"
 
 say() { echo "-----> $*"; }
 
